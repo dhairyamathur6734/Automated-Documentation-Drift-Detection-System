@@ -1,0 +1,15 @@
+Input: examples/docdrift_demo/input.diff
+Documentation scanned: examples/sample_repo
+Findings count: 1
+
+[{'type': 'renamed_cli_flag',
+  'documentation_file': 'README.md',
+  'line_number': 5,
+  'outdated_text': 'Run the program with `--deadline` to set the maximum '
+                   'execution time.',
+  'old_flag': '--deadline',
+  'new_flag': '--timeout-limit',
+  'code_change': {'removed': 'parser.add_argument("--deadline", help="Maximum '
+                             'execution time")',
+                  'added': 'parser.add_argument("--timeout-limit", '
+                           'help="Maximum execution time")'}}]
