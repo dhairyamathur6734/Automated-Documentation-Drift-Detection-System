@@ -1,23 +1,15 @@
-## Summary
+## What this PR does
 
-<!-- Briefly describe your changes. -->
+Describe the functionality, improvements, or fixes introduced by this pull request.
 
-## Problem addressed
+## Models the product uses in this PR
 
-<!-- What problem does this PR solve? -->
+Mention the open-source or open-weight AI models used in this implementation, or write `none`.
 
-## Changes made
+## AI coding assistants that helped write it
 
-- [ ] Describe the main changes.
-- [ ] Update documentation where necessary.
+Mention the AI coding assistants used during development.
 
-## Testing
+## How we tested it
 
-- [ ] Tests pass locally.
-- [ ] Relevant tests have been added or updated.
-- [ ] Documentation has been checked for accuracy.
-
-## Checklist
-
-- [ ] Changes are focused and clearly explained.
-- [ ] No unrelated files or changes are included.
+Describe the tests performed and the expected results.
