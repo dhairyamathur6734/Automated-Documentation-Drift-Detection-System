@@ -287,6 +287,12 @@ python3 -m unittest discover -s tests -p "test_ai_detector.py" -v
 python3 -m unittest discover -s tests -v
 ```
 
+### Live GitHub Actions Validation
+
+DocDrift was tested against a live pull request. The GitHub Actions workflow completed successfully and detected one outdated CLI flag reference in `examples/sample_repo/README.md`, identifying line 5 and the rename from `--deadline` to `--timeout-limit`.
+
+The optional AI analysis remains separate from the deterministic detector and may be unavailable in hosted environments without a configured local AI service.
+
 ## Current limitations
 
 - Only CLI flag **renames** are detected, not changed defaults, removed commands, or prose that drifted semantically.
