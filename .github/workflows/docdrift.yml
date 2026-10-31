@@ -1,0 +1,67 @@
+# DocDrift — Documentation Drift Detection for Pull Requests
+#
+# Runs automatically on every pull request. Detects when code changes make
+# existing documentation inaccurate, using both deterministic analysis and
+# (optionally) local AI semantic analysis.
+#
+# Permissions:
+#   contents: read   — required to check out code and read documentation files.
+#
+# To enable PR comments (opt-in), add `pull-requests: write` to the
+# permissions block and set DOCDRIFT_GITHUB_COMMENT: "true" under env.
+# See the README for details.
+
+name: DocDrift Documentation Drift Detection
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+
+permissions:
+  contents: read
+
+jobs:
+  docdrift:
+    name: Detect Documentation Drift
+    runs-on: ubuntu-latest
+
+    env:
+      # AI analysis is DISABLED by default because GitHub-hosted runners
+      # cannot reach a localhost Ollama server.
+      #
+      # To enable AI analysis, point DOCDRIFT_AI_URL at a self-hosted Ollama
+      # endpoint accessible from your runner, e.g.:
+      #   DOCDRIFT_AI_URL: "http://my-ollama-host:11434/api/chat"
+      #
+      # DOCDRIFT_AI_URL: ""
+      # DOCDRIFT_AI_MODEL: "qwen3:4b"
+      # DOCDRIFT_AI_TIMEOUT: "60"
+      #
+      # To post results as a PR comment instead of only a job summary, set:
+      #   DOCDRIFT_GITHUB_COMMENT: "true"
+      # and add `pull-requests: write` to the permissions block above.
+      DOCDRIFT_GITHUB_COMMENT: "false"
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+        with:
+          # Full history is not needed; fetch the PR head only.
+          fetch-depth: 1
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Run DocDrift
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # Forward optional AI settings from repository/org secrets or vars.
+          # These are empty unless explicitly configured; DocDrift treats an
+          # empty DOCDRIFT_AI_URL as "AI disabled".
+          DOCDRIFT_AI_URL: ${{ vars.DOCDRIFT_AI_URL }}
+          DOCDRIFT_AI_MODEL: ${{ vars.DOCDRIFT_AI_MODEL }}
+          DOCDRIFT_AI_TIMEOUT: ${{ vars.DOCDRIFT_AI_TIMEOUT }}
+        run: |
+          python3 -m docdrift.github_reporter
