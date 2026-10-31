@@ -394,7 +394,7 @@ def _find_outdated_references(
     findings: list[dict] = []
     for line_number, line in enumerate(text.splitlines(), start=1):
         for rename in renames:
-            if not _contains_flag(line, rename.old_flag):
+            if not _is_outdated_reference(line, rename):
                 continue
             findings.append(
                 {
@@ -411,6 +411,84 @@ def _find_outdated_references(
                 }
             )
     return findings
+
+
+def _is_outdated_reference(line: str, rename: FlagRename) -> bool:
+    """Return True if line represents genuine outdated documentation for rename.old_flag."""
+    if not _contains_flag(line, rename.old_flag):
+        return False
+
+    stripped = line.strip()
+    lowered = line.lower()
+    flag_pattern = rf"(?<![A-Za-z0-9_-]){re.escape(rename.old_flag.lower())}(?![A-Za-z0-9_-])"
+
+    # 1. Diff hunk lines in code blocks (e.g. +parser.add_argument(...) or -parser.add_argument(...))
+    # Unordered markdown lists start with "+ " or "- ", whereas diff lines start with "+" or "-" followed by code.
+    if (stripped.startswith("+") and not stripped.startswith("+ ")) or (
+        stripped.startswith("-") and not stripped.startswith("- ")
+    ):
+        return False
+    if re.match(
+        r"^[+-]\s*(?:parser\.|add_argument|add_option|click\.|option\(|Option\(|[a-zA-Z_]+\s*=)",
+        stripped,
+    ):
+        return False
+
+    # 2. Test fixture / finding schema output (e.g. "new_flag": "--deadline", "added": "...", "old_flag": "...")
+    if re.search(
+        r"""['"](?:new_flag|old_flag|added|removed|new|outdated_text)['"]\s*:\s*""",
+        line,
+    ):
+        return False
+
+    # 3. Explicit statements stating the reference is correct or should not be reported
+    if re.search(
+        r"\b(?:must\s+not|should\s+not|is\s+not|not|never)\s+(?:be\s+)?reported\b",
+        lowered,
+    ):
+        return False
+    if re.search(r"\bcorrect(?:ly)?\b.*?" + flag_pattern, lowered) or re.search(
+        flag_pattern + r".*?\bcorrect(?:ly)?\b", lowered
+    ):
+        if re.search(
+            r"\bcorrect(?:ly)?\b.*?(?:reference|mention|us\w+|state|claim)",
+            lowered,
+        ) or re.search(
+            r"\bcorrect\s+[`'\"]?" + re.escape(rename.old_flag.lower()),
+            lowered,
+        ):
+            return False
+
+    # 4. Statements describing a different rename where old_flag is the destination/target
+    # e.g. "changes `--timeout` to `--deadline`" or "renaming `--timeout` to `--deadline`"
+    diff_rename_target = re.search(
+        r"""(?:to|->|→|into)\s+[`'"]?"""
+        + re.escape(rename.old_flag)
+        + r"""[`'"]?(?:[.,\s\)]|$)""",
+        line,
+    )
+    if diff_rename_target:
+        if re.search(
+            r"""(?:--[a-zA-Z0-9-]+|-[a-zA-Z]|renam\w+|chang\w+|from)\b.*?(?:to|->|→|into)\s+[`'"]?"""
+            + re.escape(rename.old_flag),
+            line,
+        ):
+            return False
+
+    # 5. Explaining the rename itself or meta-commentary:
+    # e.g., "renamed/changes --old to --new" or "README.md still says '--old'"
+    self_rename = re.search(
+        re.escape(rename.old_flag)
+        + r"""[`'"]?\s+(?:to|->|→|into)\s+[`'"]?"""
+        + re.escape(rename.new_flag),
+        line,
+    )
+    if self_rename:
+        return False
+    if re.search(r"\bstill\s+says\b", lowered):
+        return False
+
+    return True
 
 
 def _contains_flag(text: str, flag: str) -> bool:

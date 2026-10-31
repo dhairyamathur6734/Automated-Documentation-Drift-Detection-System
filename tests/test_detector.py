@@ -370,6 +370,63 @@ diff --git a/README.md b/README.md
             _write_markdown(root, "README.md", "Use `--timeout` before the job ends.\n")
             self.assertEqual(detect_drift(diff, root), [])
 
+    def test_false_positive_diff_additions_and_schemas_ignored(self) -> None:
+        """Diff addition code lines and finding schemas must not be flagged."""
+        diff = """\
+--- a/cli.py
++++ b/cli.py
+@@ -1,3 +1,3 @@
+ import argparse
+-parser.add_argument("--deadline", help="Maximum execution time")
++parser.add_argument("--timeout-limit", help="Maximum execution time")
+"""
+        doc = (
+            "# Code Examples and Schemas\n\n"
+            "+parser.add_argument(\"--deadline\", help=\"Maximum execution time\")\n"
+            "+parser.add_argument(\"--deadline\", default=60)\n"
+            "    \"new_flag\": \"--deadline\",\n"
+            "    \"added\": 'parser.add_argument(\"--deadline\")',\n"
+            "Run the program with `--deadline` to set the maximum execution time.\n"
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            _write_markdown(root, "README.md", doc)
+            findings = detect_drift(diff, root)
+
+        self.assertEqual(len(findings), 1)
+        self.assertEqual(findings[0]["line_number"], 7)
+        self.assertEqual(
+            findings[0]["outdated_text"],
+            "Run the program with `--deadline` to set the maximum execution time.",
+        )
+
+    def test_false_positive_different_rename_and_correct_assertions_ignored(self) -> None:
+        """Historical explanations of other renames and explicit correctness assertions must not be flagged."""
+        diff = """\
+--- a/cli.py
++++ b/cli.py
+@@ -1,3 +1,3 @@
+ import argparse
+-parser.add_argument("--deadline", help="Maximum execution time")
++parser.add_argument("--timeout-limit", help="Maximum execution time")
+"""
+        doc = (
+            "- Code changes `--timeout` to `--deadline`.\n"
+            "A unified diff renaming `--timeout` to `--deadline` should produce one finding.\n"
+            "The sample README also contains a correct `--deadline` reference. That line is not reported.\n"
+            "The `--deadline` sentence must not be reported.\n"
+            "contains code that defines `--deadline` while also correctly mentioning `--deadline`.\n"
+            "Use `--deadline` in production.\n"
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            _write_markdown(root, "README.md", doc)
+            findings = detect_drift(diff, root)
+
+        self.assertEqual(len(findings), 1)
+        self.assertEqual(findings[0]["line_number"], 6)
+        self.assertEqual(findings[0]["outdated_text"], "Use `--deadline` in production.")
+
 
 if __name__ == "__main__":
     unittest.main()
