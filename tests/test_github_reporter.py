@@ -774,5 +774,214 @@ class TestSecurityAndSanitization(unittest.TestCase):
             self.assertEqual(_get_api_base(), "https://ghe.mycompany.com/api/v3")
 
 
+# ---------------------------------------------------------------------------
+# Tests: Synchronize updates and multi-commit PR diff capturing
+# ---------------------------------------------------------------------------
+
+
+class TestSynchronizeAndCommitDiffs(unittest.TestCase):
+
+    def _make_event_file(self, event_data: dict) -> str:
+        tmp = tempfile.NamedTemporaryFile(
+            mode="w", suffix=".json", delete=False, encoding="utf-8"
+        )
+        json.dump(event_data, tmp)
+        tmp.flush()
+        tmp.close()
+        return tmp.name
+
+    def _make_summary_file(self) -> str:
+        tmp = tempfile.NamedTemporaryFile(
+            mode="w", suffix=".md", delete=False, encoding="utf-8"
+        )
+        tmp.close()
+        return tmp.name
+
+    def test_synchronize_event_captures_commit_rename(self) -> None:
+        """Verify that synchronize events capture renames from compare API even if file was added in PR."""
+        event_data = {
+            "action": "synchronize",
+            "number": 1,
+            "before": "ac3e65f52002745d4f91219d7fc6f4a791f457ab",
+            "after": "99a9e8823099a9e637f50f8e9da53a8cdc0a8698",
+            "repository": {"full_name": "owner/testrepo"},
+            "pull_request": {"number": 1},
+        }
+        event_file = self._make_event_file(event_data)
+        summary_file = self._make_summary_file()
+
+        # Cumulative PR files returns added file (no removed lines)
+        pr_files_body = json.dumps([
+            {
+                "filename": "examples/sample_repo/cli.py",
+                "status": "added",
+                "patch": (
+                    "@@ -0,0 +1,4 @@\n"
+                    "+import argparse\n"
+                    "+\n"
+                    "+parser = argparse.ArgumentParser()\n"
+                    '+parser.add_argument("--timeout-limit", help="Maximum execution time")\n'
+                ),
+            }
+        ]).encode()
+
+        # Compare endpoint returns the commit diff with the actual rename
+        compare_body = json.dumps({
+            "status": "ahead",
+            "files": [
+                {
+                    "filename": "examples/sample_repo/cli.py",
+                    "status": "modified",
+                    "patch": (
+                        "@@ -1,4 +1,4 @@\n"
+                        " import argparse\n"
+                        " \n"
+                        " parser = argparse.ArgumentParser()\n"
+                        '-parser.add_argument("--deadline", help="Maximum execution time")\n'
+                        '+parser.add_argument("--timeout-limit", help="Maximum execution time")\n'
+                    ),
+                }
+            ],
+        }).encode()
+
+        responses = [pr_files_body, compare_body]
+        step = {"n": 0}
+
+        def fake_urlopen(req, timeout=30):
+            mock_resp = MagicMock()
+            mock_resp.read.return_value = responses[step["n"]]
+            mock_resp.headers = {"Link": ""}
+            mock_resp.__enter__ = lambda s: s
+            mock_resp.__exit__ = MagicMock(return_value=False)
+            step["n"] += 1
+            return mock_resp
+
+        with tempfile.TemporaryDirectory() as workspace:
+            sample_dir = Path(workspace) / "examples" / "sample_repo"
+            sample_dir.mkdir(parents=True, exist_ok=True)
+            (sample_dir / "README.md").write_text(
+                "# CLI Usage\n\nRun the program with `--deadline` to set the maximum execution time.\n",
+                encoding="utf-8",
+            )
+            (sample_dir / "cli.py").write_text(
+                'import argparse\nparser = argparse.ArgumentParser()\n'
+                'parser.add_argument("--timeout-limit", help="Maximum execution time")\n',
+                encoding="utf-8",
+            )
+
+            env = {
+                "GITHUB_TOKEN": "ghs_fake_token",
+                "GITHUB_REPOSITORY": "owner/testrepo",
+                "GITHUB_EVENT_PATH": event_file,
+                "GITHUB_WORKSPACE": workspace,
+                "GITHUB_STEP_SUMMARY": summary_file,
+            }
+
+            with patch.dict(os.environ, env, clear=True):
+                with patch("docdrift.github_reporter.urllib.request.urlopen", side_effect=fake_urlopen):
+                    exit_code = run_from_github_env()
+
+        with open(summary_file, encoding="utf-8") as fh:
+            content = fh.read()
+
+        self.assertEqual(exit_code, 0)
+        self.assertEqual(step["n"], 2)  # Fetched both files and compare
+        self.assertIn("Deterministic Findings", content)
+        self.assertIn("--deadline", content)
+        self.assertIn("--timeout-limit", content)
+        self.assertIn("examples/sample_repo/README.md", content)
+
+        os.unlink(event_file)
+        os.unlink(summary_file)
+
+    def test_multi_commit_pr_captures_commit_diff(self) -> None:
+        """Verify that multi-commit PRs inspect commit diffs to find flag renames."""
+        event_data = {
+            "action": "opened",
+            "number": 2,
+            "repository": {"full_name": "owner/testrepo"},
+            "pull_request": {"number": 2, "commits": 2},
+        }
+        event_file = self._make_event_file(event_data)
+        summary_file = self._make_summary_file()
+
+        # Cumulative PR files: only added file
+        pr_files_body = json.dumps([
+            {
+                "filename": "cli.py",
+                "status": "added",
+                "patch": "@@ -0,0 +1,2 @@\n+import argparse\n+parser.add_argument('--new')\n",
+            }
+        ]).encode()
+
+        # Commits list
+        commits_list_body = json.dumps([
+            {"sha": "c1"},
+            {"sha": "c2"},
+        ]).encode()
+
+        # Commit c1 detail
+        c1_body = json.dumps({
+            "sha": "c1",
+            "files": [{"filename": "cli.py", "status": "added", "patch": "@@ -0,0 +1,2 @@\n+import argparse\n+parser.add_argument('--old')\n"}],
+        }).encode()
+
+        # Commit c2 detail (rename --old to --new)
+        c2_body = json.dumps({
+            "sha": "c2",
+            "files": [{
+                "filename": "cli.py",
+                "status": "modified",
+                "patch": "@@ -1,2 +1,2 @@\n import argparse\n-parser.add_argument('--old')\n+parser.add_argument('--new')\n",
+            }],
+        }).encode()
+
+        responses = [pr_files_body, commits_list_body, c1_body, c2_body]
+        step = {"n": 0}
+
+        def fake_urlopen(req, timeout=30):
+            mock_resp = MagicMock()
+            mock_resp.read.return_value = responses[step["n"]]
+            mock_resp.headers = {"Link": ""}
+            mock_resp.__enter__ = lambda s: s
+            mock_resp.__exit__ = MagicMock(return_value=False)
+            step["n"] += 1
+            return mock_resp
+
+        with tempfile.TemporaryDirectory() as workspace:
+            (Path(workspace) / "README.md").write_text(
+                "# Docs\nUse `--old` to run the tool.\n",
+                encoding="utf-8",
+            )
+            (Path(workspace) / "cli.py").write_text(
+                "import argparse\nparser.add_argument('--new')\n",
+                encoding="utf-8",
+            )
+
+            env = {
+                "GITHUB_TOKEN": "ghs_fake_token",
+                "GITHUB_REPOSITORY": "owner/testrepo",
+                "GITHUB_EVENT_PATH": event_file,
+                "GITHUB_WORKSPACE": workspace,
+                "GITHUB_STEP_SUMMARY": summary_file,
+            }
+
+            with patch.dict(os.environ, env, clear=True):
+                with patch("docdrift.github_reporter.urllib.request.urlopen", side_effect=fake_urlopen):
+                    exit_code = run_from_github_env()
+
+        with open(summary_file, encoding="utf-8") as fh:
+            content = fh.read()
+
+        self.assertEqual(exit_code, 0)
+        self.assertIn("Deterministic Findings", content)
+        self.assertIn("--old", content)
+        self.assertIn("--new", content)
+
+        os.unlink(event_file)
+        os.unlink(summary_file)
+
+
 if __name__ == "__main__":
     unittest.main()
+

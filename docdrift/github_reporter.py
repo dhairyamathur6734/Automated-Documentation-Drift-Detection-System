@@ -100,7 +100,7 @@ def run_from_github_env() -> int:
         return 1
 
     # Fetch the diff
-    diff_result = _get_pr_diff(repo, pr_number, token)
+    diff_result = _get_pr_diff(repo, pr_number, token, event=event)
     if diff_result is None:
         _log_error(f"Failed to obtain diff for PR #{pr_number} in {repo}.")
         return 1
@@ -213,35 +213,85 @@ def _safe_code_fence(code: Any) -> str:
 # ---------------------------------------------------------------------------
 
 
+def _append_file_patches(
+    files: list[dict],
+    diff_parts: list[str],
+    seen_blocks: set[tuple[str, str, str]],
+    total_bytes: int,
+) -> tuple[int, bool]:
+    """Append diff blocks for a list of file entries from the GitHub API.
+
+    Returns updated (total_bytes, truncated).
+    """
+    truncated = False
+    for file_entry in files:
+        if not isinstance(file_entry, dict):
+            continue
+        filename = file_entry.get("filename", "")
+        patch = file_entry.get("patch", "")
+        if not filename or not patch:
+            continue
+
+        prev_name = file_entry.get("previous_filename", filename)
+        block_key = (prev_name, filename, patch)
+        if block_key in seen_blocks:
+            continue
+        seen_blocks.add(block_key)
+
+        block = (
+            f"diff --git a/{prev_name} b/{filename}\n"
+            f"--- a/{prev_name}\n"
+            f"+++ b/{filename}\n"
+            f"{patch}\n"
+        )
+        block_bytes = len(block.encode("utf-8"))
+        if total_bytes + block_bytes > MAX_DIFF_BYTES:
+            truncated = True
+            break
+        diff_parts.append(block)
+        total_bytes += block_bytes
+
+    return total_bytes, truncated
+
+
 def _get_pr_diff(
-    repo: str, pr_number: int, token: str
+    repo: str,
+    pr_number: int,
+    token: str,
+    *,
+    event: dict[str, Any] | None = None,
 ) -> tuple[str, bool] | None:
     """Fetch pull-request files and assemble a unified diff string.
 
     Follows GitHub's Link-header pagination so that PRs with more than 30
-    changed files are fully covered.  Stops fetching further pages once the
+    changed files are fully covered. Stops fetching further pages once the
     assembled diff reaches ``MAX_DIFF_BYTES``.
+
+    When an event payload indicates a synchronization push (`action == "synchronize"`)
+    or multi-commit pull request, also inspects the update's commit diffs so that
+    renames introduced within the PR commits are captured even if the affected
+    files were newly created in the PR relative to the target branch.
 
     Returns ``(diff_text, was_truncated)`` or ``None`` on failure.
     """
-    base_url = (
-        f"{_get_api_base()}/repos/{repo}/pulls/{pr_number}/files"
-        "?per_page=100"
-    )
     headers = {
         "Authorization": f"Bearer {token}",
         "Accept": "application/vnd.github+json",
         "X-GitHub-Api-Version": "2022-11-28",
         "User-Agent": "docdrift-github-reporter/1.0",
     }
+    api_base = _get_api_base()
 
-    # Assemble unified diff from per-file patches
     diff_parts: list[str] = []
+    seen_blocks: set[tuple[str, str, str]] = set()
     total_bytes = 0
     truncated = False
+
+    # 1. Fetch cumulative PR files (base...head)
+    base_url = f"{api_base}/repos/{repo}/pulls/{pr_number}/files?per_page=100"
     next_url: str | None = base_url
 
-    while next_url:
+    while next_url and not truncated:
         try:
             req = urllib.request.Request(next_url, headers=headers)
             with urllib.request.urlopen(req, timeout=30) as resp:
@@ -271,31 +321,74 @@ def _get_pr_diff(
             _log_error("Unexpected GitHub API response shape (expected a list of files).")
             return None
 
-        for file_entry in files:
-            if not isinstance(file_entry, dict):
-                continue
-            filename = file_entry.get("filename", "")
-            patch = file_entry.get("patch", "")
-            if not filename or not patch:
-                continue
-
-            prev_name = file_entry.get("previous_filename", filename)
-            block = (
-                f"diff --git a/{prev_name} b/{filename}\n"
-                f"--- a/{prev_name}\n"
-                f"+++ b/{filename}\n"
-                f"{patch}\n"
-            )
-            block_bytes = len(block.encode("utf-8"))
-            if total_bytes + block_bytes > MAX_DIFF_BYTES:
-                truncated = True
-                next_url = None  # stop fetching further pages
-                break
-            diff_parts.append(block)
-            total_bytes += block_bytes
+        total_bytes, truncated = _append_file_patches(
+            files, diff_parts, seen_blocks, total_bytes
+        )
 
         if next_url and not truncated:
             next_url = _parse_next_link(link_header)
+
+    # 2. If this is a synchronization update, also fetch compare between before and after
+    if event and not truncated:
+        action = event.get("action")
+        before = event.get("before")
+        after = event.get("after")
+        if (
+            action == "synchronize"
+            and isinstance(before, str)
+            and isinstance(after, str)
+            and len(before) >= 7
+            and len(after) >= 7
+            and not before.startswith("0000000")
+            and not after.startswith("0000000")
+            and before != after
+        ):
+            compare_url = f"{api_base}/repos/{repo}/compare/{before}...{after}"
+            try:
+                req = urllib.request.Request(compare_url, headers=headers)
+                with urllib.request.urlopen(req, timeout=30) as resp:
+                    compare_data = json.loads(resp.read())
+                if isinstance(compare_data, dict):
+                    compare_files = compare_data.get("files", [])
+                    if isinstance(compare_files, list):
+                        total_bytes, truncated = _append_file_patches(
+                            compare_files, diff_parts, seen_blocks, total_bytes
+                        )
+            except Exception as exc:  # noqa: BLE001
+                _log_error(f"Could not fetch compare diff for synchronize event: {exc}")
+
+    # 3. If PR has multiple commits (or opened with >1 commit), inspect PR commits
+    if event and not truncated:
+        pr_info = event.get("pull_request")
+        commits_count = pr_info.get("commits", 0) if isinstance(pr_info, dict) else 0
+        if isinstance(commits_count, int) and commits_count > 1:
+            commits_url = f"{api_base}/repos/{repo}/pulls/{pr_number}/commits?per_page=20"
+            try:
+                req = urllib.request.Request(commits_url, headers=headers)
+                with urllib.request.urlopen(req, timeout=30) as resp:
+                    commits_list = json.loads(resp.read())
+                if isinstance(commits_list, list):
+                    # Inspect up to the last 5 commits
+                    for commit_entry in commits_list[-5:]:
+                        if truncated:
+                            break
+                        if isinstance(commit_entry, dict) and "sha" in commit_entry:
+                            c_sha = commit_entry["sha"]
+                            commit_detail_url = f"{api_base}/repos/{repo}/commits/{c_sha}"
+                            try:
+                                c_req = urllib.request.Request(commit_detail_url, headers=headers)
+                                with urllib.request.urlopen(c_req, timeout=30) as c_resp:
+                                    c_data = json.loads(c_resp.read())
+                                if isinstance(c_data, dict):
+                                    c_files = c_data.get("files", [])
+                                    if isinstance(c_files, list):
+                                        total_bytes, truncated = _append_file_patches(
+                                            c_files, diff_parts, seen_blocks, total_bytes
+                                        )
+                            except Exception:  # noqa: BLE001
+                                pass
+            except Exception as exc:  # noqa: BLE001
+                _log_error(f"Could not inspect PR commits: {exc}")
 
     if not diff_parts:
         # Return a minimal stub so analysis still runs and produces an empty result
