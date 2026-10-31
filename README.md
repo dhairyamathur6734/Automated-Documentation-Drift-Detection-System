@@ -403,7 +403,7 @@ No other permissions are requested. The `GITHUB_TOKEN` is never printed to logs.
 - **AI false positives**: The AI model may flag behavior-preserving refactors (e.g., a loop rewritten as a list comprehension) as documentation drift. The improved prompt substantially reduces this, but local LLMs are non-deterministic. All AI findings require human review.
 - **Deterministic scope**: Only CLI flag *renames* declared in source files are detected. Changed defaults, removed commands, and prose drift require AI analysis.
 - **Diff size**: Diffs exceeding 512 KB are truncated before analysis. A warning appears in the report.
-- **No live PR test**: The workflow logic has been tested with mocked GitHub API responses. A real PR test would require a live repository with GitHub Actions enabled.
+- **CI validation**: The documentation-drift workflow completed successfully on a live pull request. The automated GitHub API integration tests also use mocked responses.
 - **GitHub Enterprise**: The API base URL can be overridden via `DOCDRIFT_GITHUB_API` environment variable if you use GitHub Enterprise Server.
 - **AI in CI**: AI analysis requires a self-hosted runner with Ollama. It cannot be enabled on standard `ubuntu-latest` GitHub-hosted runners.
 
