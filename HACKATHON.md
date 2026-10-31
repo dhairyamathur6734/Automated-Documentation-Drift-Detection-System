@@ -1,8 +1,8 @@
-# HACKATHON.md
+# [HACKATHON.md](http://HACKATHON.md)
 
 ## Team
 
-- **Team name:** [Choose a team name]
+- **Team name:** Musical Box
 - **Team members:**
   - Dhairya Mathur (solo participant)
 
@@ -68,7 +68,7 @@ The implementation uses only the Python standard library.
 
 `examples/sample_repo/` contains current code that defines `--deadline` and a README that still mentions `--timeout` while also correctly mentioning `--deadline`.
 
-A unified diff renaming `--timeout` to `--deadline` should produce exactly one finding: README.md line 3 (`Use `--timeout` to stop slow jobs.`). The `--deadline` sentence must not be reported.
+A unified diff renaming `--timeout` to `--deadline` should produce exactly one finding: README.md line 3 (`Use` --timeout `to stop slow jobs.`). The `--deadline` sentence must not be reported.
 
 ## Current limitations
 
