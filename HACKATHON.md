@@ -64,18 +64,18 @@ Public APIs: `docdrift.detector.detect_drift(diff, repo_path) -> list[dict]` and
 
 The implementation uses only the Python standard library.
 
-## Demonstration scenario
+## Demonstration Scenario
 
-`examples/sample_repo/` contains current code that defines `--deadline` and a README that still mentions `--timeout` while also correctly mentioning `--deadline`.
+`examples/sample_repo/` contains a CLI implementation that defines the `--timeout-limit` option, while its README contains references to the older `--timeout` and `--deadline` options.
 
-A unified diff renaming `--timeout` to `--deadline` should produce exactly one finding: README.md line 3 (`Use` --timeout `to stop slow jobs.`). The `--deadline` sentence must not be reported.
+The detector uses a unified Git diff to identify supported CLI flag renames and searches Markdown documentation for references to the previous flag. The expected findings depend on the rename evidence available in the supplied diff. This example illustrates how outdated documentation references can be identified without executing repository code.
 
 ## Current limitations
 
 - Only straightforward, evidence-backed flag renames are reported.
 - Ambiguous multi-flag change blocks are skipped to avoid false pairings.
 - Semantic suggestions from the local model are unverified and require human review.
-- No CI integration is bundled in this milestone.
+- GitHub Actions CI and pull-request documentation-drift detection are configured; broader integration and detection coverage remain future work.
 
 ## Planned future improvements
 
